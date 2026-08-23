@@ -1,6 +1,10 @@
 {
   "name": "vintasend-templates-management-dashboard-core",
   "version": "1.0.0-alpha1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vintasoftware/vintasend-templates-management-dashboard-core.git"
+  },
   "description": "Headless React core for VintaSend template-management dashboards: a generated OpenAPI client, TanStack Query hooks, and URL-driven template and tag filters",
   "license": "MIT",
   "author": "Vinta Software",
