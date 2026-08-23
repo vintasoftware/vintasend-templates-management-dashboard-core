@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [20.x, 22.x, 24.x]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  schema:
+    name: Generated client is up to date
+    runs-on: ubuntu-latest
+
+    steps:
+      # src/api/schema.ts is generated from the API package's openapi.yaml and
+      # committed, so the package builds without a sibling checkout. That only
+      # holds if it is regenerated whenever the contract changes, which is what
+      # this job enforces.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout the API contract
+        uses: actions/checkout@v4
+        with:
+          repository: vintasoftware/vintasend-ts-templates-management-api
+          path: .contract
+
+      - name: Use Node.js 24.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Regenerate from the published contract
+        run: npx openapi-typescript .contract/openapi.yaml -o src/api/schema.ts
+
+      - name: Fail if the committed client is stale
+        run: |
+          if ! git diff --quiet -- src/api/schema.ts; then
+            echo "::error::src/api/schema.ts is out of date with openapi.yaml. Run 'npm run generate:api' and commit the result."
+            git diff -- src/api/schema.ts
+            exit 1
+          fi
+          echo "src/api/schema.ts matches the contract."
