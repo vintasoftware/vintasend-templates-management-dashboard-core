@@ -91,7 +91,8 @@ export interface paths {
          *
          *     Templates are versioned rather than edited in place, which is why this is a POST that
          *     creates a resource and not a PATCH that mutates one: an already-published version is
-         *     never modified. Fields left unset are carried over from the latest version.
+         *     never modified. Fields left unset are carried over from the latest version, so the body
+         *     may be omitted.
          */
         post: operations["vintasend_templates_management_api_templates_manager_api_create_template_version"];
         delete?: never;
@@ -111,7 +112,13 @@ export interface paths {
         get: operations["vintasend_templates_management_api_templates_manager_api_get_template_version"];
         put?: never;
         post?: never;
-        /** Delete Template Version */
+        /**
+         * Delete Template Version
+         * @description Delete one version that was never published.
+         *
+         *     A version that was ever published is refused with a 409 ``CONFLICT``: a notification may be
+         *     pinned to it, and its status history records who published it. Archive it instead.
+         */
         delete: operations["vintasend_templates_management_api_templates_manager_api_delete_template_version"];
         options?: never;
         head?: never;
@@ -220,8 +227,9 @@ export interface paths {
          * @description Publish one version.
          *
          *     Other versions of the same key that are already active are left alone: a key may hold
-         *     several active versions at once, and choosing between them is the host application's
-         *     call, not this API's.
+         *     several active versions at once. An unpinned send renders the highest-numbered active
+         *     version, so activating an older version while a newer one is active does not change what
+         *     is sent.
          */
         post: operations["vintasend_templates_management_api_templates_manager_api_activate_template"];
         delete?: never;
@@ -285,10 +293,23 @@ export interface paths {
          * @description Render a version against a supplied context, whatever its status.
          *
          *     Pinning ``version`` is the point: it is what lets a draft be reviewed before anyone
-         *     activates it. Omitting it previews the latest version.
+         *     activates it. Omitting it previews the latest version, draft included. That is not what a
+         *     send renders: a send never renders a draft, only the newest active version, and for a key
+         *     with nothing published it may render a default the application registered instead.
          *
-         *     A template that fails to render comes back as a 409 ``PREVIEW_UNAVAILABLE`` carrying the
-         *     renderer's message, because a broken template is what the caller asked to find out.
+         *     A broken template is what the caller asked to find out, so it is a 409 carrying the
+         *     message that makes the draft fixable, and the code says what to fix:
+         *
+         *     * A template that cannot be composed -- a missing base, a loop, a malformed
+         *       ``managed_*`` tag -- is a 409 ``TEMPLATE_COMPOSITION_ERROR`` carrying the library's
+         *       message, which names the chain. It is the same answer ``GET /composition`` gives for
+         *       the same template.
+         *     * A template that composes but fails to render is a 409 ``PREVIEW_UNAVAILABLE``
+         *       carrying the renderer's message.
+         *
+         *     A failure reading the store is a 500 ``INTERNAL_ERROR`` with the generic message, like
+         *     any other unexpected error: it carries no backend detail, and it goes to the
+         *     unhandled-error hook.
          */
         post: operations["vintasend_templates_management_api_templates_manager_api_preview_template"];
         delete?: never;
@@ -459,6 +480,10 @@ export interface paths {
          *     This deletes a *version*, never a whole key: the seam has no operation that removes
          *     every version at once, and doing it here as a loop would be a multi-step deletion with
          *     no transaction around it.
+         *
+         *     Only a version that was never published can be deleted; anything else is a 409
+         *     ``CONFLICT``. That includes the latest version when ``version`` is omitted, so this route
+         *     cannot remove a published version by accident. Prefer naming the version.
          */
         delete: operations["vintasend_templates_management_api_templates_manager_api_delete_template"];
         options?: never;
@@ -494,13 +519,22 @@ export interface components {
                 [key: string]: boolean;
             };
         };
-        /** ApiErrorBody */
+        /**
+         * ApiErrorBody
+         * @description What went wrong. Clients branch on ``code``, never on ``message``.
+         *
+         *     Every 400 carries ``details.issues``, a list of ``{ path, message }``, whatever the
+         *     mistake was: an invalid field (``path`` is the field, dotted for a nested one), an
+         *     invalid path parameter (``path: version``), a body that is not valid JSON or is not sent
+         *     as JSON (``path`` empty), or a request the backend refused (``path`` empty, the message
+         *     repeated). A 400 may carry other keys in ``details`` next to ``issues``.
+         */
         ApiErrorBody: {
             /**
              * Code
              * @enum {string}
              */
-            code: "BAD_REQUEST" | "UNAUTHORIZED" | "NOT_FOUND" | "CONFLICT" | "INVALID_STATUS_TRANSITION" | "PREVIEW_UNAVAILABLE" | "TEMPLATE_COMPOSITION_ERROR" | "INTERNAL_ERROR";
+            code: "BAD_REQUEST" | "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "CONFLICT" | "INVALID_STATUS_TRANSITION" | "PREVIEW_UNAVAILABLE" | "TEMPLATE_COMPOSITION_ERROR" | "INTERNAL_ERROR";
             /** Message */
             message: string;
             details?: components["schemas"]["JsonValue"] | null;
@@ -550,7 +584,10 @@ export interface components {
             templateManagedBackend?: string | null;
             /** Version */
             version?: number | null;
-            /** Status */
+            /**
+             * Status
+             * @description Applies on top of mostRecentActiveVersion, which defaults to true and keeps one row per key: its newest draft or active version. That row is never inactive or archived, so to find inactive or archived versions send mostRecentActiveVersion=false as well.
+             */
             status?: ("draft" | "active" | "inactive" | "archived")[] | null;
             /** Createdatfrom */
             createdAtFrom?: string | null;
@@ -656,7 +693,10 @@ export interface components {
             page: number;
             /** Pagesize */
             pageSize: number;
-            /** Hasmore */
+            /**
+             * Hasmore
+             * @description True when the next page has at least one row.
+             */
             hasMore: boolean;
         };
         /** DataResponse[ManagedTemplateOut] */
@@ -934,7 +974,10 @@ export interface components {
             page: number;
             /** Pagesize */
             pageSize: number;
-            /** Hasmore */
+            /**
+             * Hasmore
+             * @description True when the next page has at least one row.
+             */
             hasMore: boolean;
         };
         /** DataResponse[ManagedTemplateTagOut] */
@@ -1015,6 +1058,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
         };
     };
     vintasend_templates_management_api_templates_manager_api_list_templates: {
@@ -1027,6 +1079,7 @@ export interface operations {
                 description?: string | null;
                 templateManagedBackend?: string | null;
                 version?: number | null;
+                /** @description Applies on top of mostRecentActiveVersion, which defaults to true and keeps one row per key: its newest draft or active version. That row is never inactive or archived, so to find inactive or archived versions send mostRecentActiveVersion=false as well. */
                 status?: ("draft" | "active" | "inactive" | "archived")[] | null;
                 createdAtFrom?: string | null;
                 createdAtTo?: string | null;
@@ -1065,6 +1118,15 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1114,6 +1176,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
         };
     };
     vintasend_templates_management_api_templates_manager_api_list_template_versions: {
@@ -1145,6 +1216,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Not Found */
             404: {
                 headers: {
@@ -1165,7 +1245,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
+        requestBody?: {
             content: {
                 "application/json": components["schemas"]["CreateVersionBody"];
             };
@@ -1191,6 +1271,15 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1230,8 +1319,26 @@ export interface operations {
                     "application/json": components["schemas"]["DataResponse_ManagedTemplateOut_"];
                 };
             };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1269,6 +1376,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Unauthorized */
             401: {
                 headers: {
@@ -1278,8 +1394,26 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1313,6 +1447,15 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1371,6 +1514,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Not Found */
             404: {
                 headers: {
@@ -1417,6 +1569,15 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1486,6 +1647,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Not Found */
             404: {
                 headers: {
@@ -1541,6 +1711,15 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1610,6 +1789,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Not Found */
             404: {
                 headers: {
@@ -1665,6 +1853,15 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1734,6 +1931,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Not Found */
             404: {
                 headers: {
@@ -1787,6 +1993,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
         };
     };
     vintasend_templates_management_api_templates_manager_api_create_tag: {
@@ -1822,6 +2037,15 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1869,6 +2093,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Not Found */
             404: {
                 headers: {
@@ -1900,6 +2133,15 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1960,6 +2202,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Not Found */
             404: {
                 headers: {
@@ -2002,6 +2253,15 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2058,6 +2318,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Not Found */
             404: {
                 headers: {
@@ -2093,6 +2362,15 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2140,8 +2418,26 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

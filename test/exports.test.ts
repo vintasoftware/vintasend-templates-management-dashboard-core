@@ -44,6 +44,9 @@ const EXPECTED_EXPORTS = [
   // invalidation
   'useInvalidateTemplates',
   'useInvalidateTags',
+  // retrying
+  'retryUnlessDefinitive',
+  'MAX_QUERY_RETRIES',
   // filters
   'useFilteredTemplates',
   'useFilteredTags',
@@ -51,6 +54,8 @@ const EXPECTED_EXPORTS = [
   'useTagFilters',
   'useHistoryRouterAdapter',
   'createStaticRouterAdapter',
+  'useFilterText',
+  'DEFAULT_FILTER_TEXT_DELAY_MS',
   'parseTemplateFilters',
   'parseTagFilters',
   'parseTemplateListQuery',
@@ -101,6 +106,10 @@ describe('package entry point', () => {
 
   it('does not leak the Next.js binding into the framework-free entry point', () => {
     expect('useNextRouterAdapter' in pkg).toBe(false);
+  });
+
+  it('does not leak the TanStack Router binding into the framework-free entry point', () => {
+    expect('useTanStackRouterAdapter' in pkg).toBe(false);
   });
 });
 

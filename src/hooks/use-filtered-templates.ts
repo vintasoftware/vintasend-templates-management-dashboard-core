@@ -29,9 +29,21 @@ import {
 import { orderableFields, supportsOrdering } from './capabilities.js';
 import { useCapabilities, useTemplatesQuery, type WithClient } from './queries.js';
 
+/**
+ * The options in `query` that describe *when and how* to fetch rather than
+ * what to do with the data, so they apply to the capabilities read too. The
+ * rest — `select`, `placeholderData`, `staleTime` and the like — are about the
+ * list's data and stay with the list.
+ */
+const SHARED_QUERY_OPTIONS = ['enabled', 'retry', 'retryDelay', 'throwOnError', 'networkMode'];
+
 export type UseFilteredTemplatesOptions = UseTemplateFiltersOptions &
   WithClient & {
-    /** Options forwarded to the underlying TanStack query. */
+    /**
+     * Options forwarded to the underlying TanStack query. `enabled`, `retry`,
+     * `retryDelay`, `throwOnError` and `networkMode` reach the capabilities
+     * read as well.
+     */
     query?: Record<string, unknown>;
 
     /**
@@ -45,7 +57,7 @@ export type UseFilteredTemplatesResult = TemplateFiltersState & {
   /** The current page's rows, or an empty array while loading or on error. */
   templates: ManagedTemplate[];
 
-  /** True when the page came back full, so another page may exist. */
+  /** True when the next page has at least one row. */
   hasNextPage: boolean;
   hasPreviousPage: boolean;
   nextPage: () => void;
@@ -87,7 +99,12 @@ export function useFilteredTemplates(
 
   const capabilities = useCapabilities({
     ...clientOption,
-    query: { enabled: !skipCapabilities },
+    query: {
+      ...Object.fromEntries(
+        Object.entries(queryOptions ?? {}).filter(([key]) => SHARED_QUERY_OPTIONS.includes(key)),
+      ),
+      ...(skipCapabilities ? { enabled: false } : {}),
+    },
   });
 
   const templates = useMemo<ManagedTemplate[]>(() => result.data?.data ?? [], [result.data]);

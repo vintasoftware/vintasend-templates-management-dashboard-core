@@ -154,6 +154,7 @@ The hooks read and write through a small adapter, so they never import a router.
 | Setup | Adapter |
 | --- | --- |
 | Next.js app router | `useNextRouterAdapter()` from `…/next` |
+| TanStack Router | `useTanStackRouterAdapter()` from `…/tanstack-router` |
 | Anything else | the default — `useHistoryRouterAdapter()` |
 | Server render, tests | `createStaticRouterAdapter(search)` |
 
@@ -174,8 +175,26 @@ server component re-render with the new filters. As with anything that reads
 search params in Next, the component must be a client component under a
 `<Suspense>` boundary.
 
-To write your own — react-router, TanStack Router, a custom scheme — implement
-two members:
+Use the TanStack Router adapter under TanStack Router, rather than the History
+one: the router writes the URL in its own format — arrays as JSON, a string that
+looks like a number quoted (`?version=%223%22`) — so the raw query string is not
+what the filter parser expects. The adapter reads the search the router has
+already parsed, and writes values back for it to encode. Search parameters the
+filters do not own, structured ones included, are written back as they were.
+`@tanstack/react-router` is an optional peer dependency, needed only by this
+entry point.
+
+```tsx
+import { useTanStackRouterAdapter } from 'vintasend-templates-management-dashboard-core/tanstack-router';
+
+const filters = useFilteredTemplates({ router: useTanStackRouterAdapter() });
+```
+
+With any router, a setter computes from the filters of the render it is called
+in, so two changes in one event handler should go through one `patchFilters`
+call rather than two setters.
+
+To write your own — react-router, a custom scheme — implement two members:
 
 ```ts
 type RouterAdapter = {
@@ -230,9 +249,32 @@ export function TemplateTable() {
 ```
 
 The API reports `hasMore` rather than a total count — a backend is not required
-to be able to count — so there is a "next page" flag but no page count.
+to be able to count — so there is a "next page" flag but no page count. It is
+true only when the next page has a row, so `nextPage` never lands on an empty
+page.
 
-Debouncing a text filter is left to you; `setFilter` writes immediately.
+### A text filter
+
+Do not bind an input straight to `filters.name`. The URL is read back trimmed,
+so a trailing space disappears as soon as it is typed ("appointment reminder"
+becomes "appointmentreminder"), and every keystroke is a navigation and a list
+request. `useFilterText` keeps the typed text locally, writes the trimmed value
+once typing pauses, and follows the URL when it changes from outside — Clear
+filters, the back button:
+
+```tsx
+const { filters, setFilter } = useFilteredTemplates({ router });
+const search = useFilterText(filters.name, (name) => setFilter('name', name));
+
+<input
+  value={search.text}
+  onChange={(event) => search.setText(event.target.value)}
+  onKeyDown={(event) => event.key === 'Enter' && search.flush()}
+/>
+```
+
+The pause defaults to `DEFAULT_FILTER_TEXT_DELAY_MS` (300 ms); pass a third
+argument to change it.
 
 ## Hooks
 
@@ -257,6 +299,20 @@ panel that is not open yet wants.
 On `version`: omitting it means **the latest** everywhere except
 `useTemplateStatusHistory`, where it means **every version**. That asymmetry is
 the contract's, not this package's.
+
+Every read retries only what a retry can change. An answer from the API with a
+code — a 404 for a deleted key, a 409 composition error, a 400 for a bad shared
+link — shows at once instead of after TanStack Query's three retries (about 7
+seconds). `INTERNAL_ERROR` and failures with no code at all, such as a dropped
+connection, are retried up to three times. That is `retryUnlessDefinitive`.
+Pass `query: { retry }` to override it per hook; a `retry` set in your
+`QueryClient`'s `defaultOptions.queries` is respected and the hooks do not set
+their own.
+
+`useFilteredTemplates` hands `enabled`, `retry`, `retryDelay`, `throwOnError`
+and `networkMode` from its `query` option to the capabilities read as well, so
+`enabled: false` holds both requests. Options about the list's data, such as
+`select`, stay with the list.
 
 ### Writes
 
@@ -291,6 +347,24 @@ setTags.mutate({ params: { path: { key } }, body: { tags: ['marketing'] } });
 
 `usePreviewTemplate` is a POST but changes nothing, so it deliberately
 invalidates nothing — drive a live preview pane from it on a debounce.
+
+The invalidation starts when a write succeeds, and your `onSuccess` runs
+straight after without waiting for the refetch: closing a panel should not wait
+on a list, least of all after a delete, when the open views refetch something
+that is gone. So `mutateAsync` resolves before the lists have refreshed; await
+`useInvalidateTemplates()` yourself when something must wait for them.
+
+**A flow that unmounts its own component should use `mutateAsync`.** TanStack
+Query drops the callbacks passed to `mutate(variables, { onSuccess })` once the
+component that called it unmounts, so "discard the last version, then close
+this panel" never closes anything when the discard unmounts the panel first:
+
+```tsx
+await discard.mutateAsync({ params: { path: { key, version } } });
+closePanel();
+```
+
+`onSuccess` passed in the hook's own `mutation` option survives the unmount.
 
 Renaming or archiving a tag invalidates the **template** queries too, since
 templates carry their tags inline.
@@ -328,6 +402,8 @@ rather than on message text:
 
 ```tsx
 switch (getApiErrorCode(error)) {
+  case 'UNAUTHORIZED': return <SignIn />;
+  case 'FORBIDDEN': return <NotAllowed />; // signed in, and not allowed: not a sign-in problem
   case 'INVALID_STATUS_TRANSITION': return <TransitionRefused />;
   case 'TEMPLATE_COMPOSITION_ERROR': return <BrokenInheritance />;
   case 'PREVIEW_UNAVAILABLE': return <NoPreview />;
@@ -338,6 +414,14 @@ switch (getApiErrorCode(error)) {
 `getApiErrorMessage` also handles network failures. `isApiErrorResponse` narrows
 the type, `getApiErrorDetails` reads the machine-readable context, and
 `toApiErrorResponse` coerces any rejection into the same envelope.
+
+Every `BAD_REQUEST` carries `details.issues: [{ path, message }]`, whatever the
+mistake: `path` names the field, or is empty for the request as a whole. A form
+can map each issue onto its field without knowing which kind of mistake it was.
+
+A preview tells the two ways a template can be broken apart:
+`TEMPLATE_COMPOSITION_ERROR` when its chain cannot be assembled (the message
+names the chain), `PREVIEW_UNAVAILABLE` when it assembles and fails to render.
 
 ## Regenerating the client
 

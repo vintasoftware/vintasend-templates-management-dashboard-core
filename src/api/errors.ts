@@ -15,11 +15,14 @@ import type { ApiErrorCode, ErrorResponse } from './types.js';
  * worth handling on their own: `INVALID_STATUS_TRANSITION` when a lifecycle
  * move is not allowed from the current status, and
  * `TEMPLATE_COMPOSITION_ERROR` when a template's inheritance chain cannot be
- * resolved.
+ * resolved. `FORBIDDEN` means the caller is signed in and not allowed, so it
+ * is not a reason to send them back to a sign-in page the way `UNAUTHORIZED`
+ * is.
  */
 export const API_ERROR_CODES = [
   'BAD_REQUEST',
   'UNAUTHORIZED',
+  'FORBIDDEN',
   'NOT_FOUND',
   'CONFLICT',
   'INVALID_STATUS_TRANSITION',

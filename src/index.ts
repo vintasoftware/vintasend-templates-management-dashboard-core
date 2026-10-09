@@ -120,6 +120,11 @@ export {
   useHistoryRouterAdapter,
 } from './filters/router.js';
 export {
+  DEFAULT_FILTER_TEXT_DELAY_MS,
+  type FilterTextState,
+  useFilterText,
+} from './filters/use-filter-text.js';
+export {
   type TagFiltersState,
   type UseTagFiltersOptions,
   useTagFilters,
@@ -158,7 +163,9 @@ export {
 } from './hooks/mutations.js';
 // Query hooks
 export {
+  MAX_QUERY_RETRIES,
   type QueryHookOptions,
+  retryUnlessDefinitive,
   TAG_PATHS,
   TEMPLATE_PATHS,
   useCapabilities,
