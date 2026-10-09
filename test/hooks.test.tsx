@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, type QueryClientConfig, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,6 +11,8 @@ import {
   useUpdateTag,
 } from '../src/hooks/mutations.js';
 import {
+  MAX_QUERY_RETRIES,
+  retryUnlessDefinitive,
   useCapabilities,
   useInvalidateTemplates,
   useTag,
@@ -197,7 +199,12 @@ function createStubApi(overrides: Route[] = []) {
   return { requests, fetchImpl: fetchImpl as unknown as typeof globalThis.fetch };
 }
 
-function setup(overrides: Route[] = []) {
+function setup(
+  overrides: Route[] = [],
+  queryClientConfig: QueryClientConfig = {
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  },
+) {
   const stub = createStubApi(overrides);
 
   const client = createTemplatesClient({
@@ -205,9 +212,7 @@ function setup(overrides: Route[] = []) {
     fetch: stub.fetchImpl,
   });
 
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
+  const queryClient = new QueryClient(queryClientConfig);
 
   function wrapper({ children }: { children: ReactNode }) {
     return (
@@ -904,6 +909,151 @@ describe('useFilteredTags', () => {
     await waitFor(() => expect(result.current.isLoading).toBe(false));
 
     expect(requests.some((r) => r.url.pathname === '/api/v1/capabilities')).toBe(false);
+  });
+});
+
+describe('retrying', () => {
+  /** A QueryClient that leaves retrying to the hooks, as an app that never configured it does. */
+  const UNCONFIGURED: QueryClientConfig = {};
+
+  function failing(status: number, code: string) {
+    return [
+      {
+        method: 'GET',
+        pattern: /^\/api\/v1\/templates\/[^/]+$/,
+        handler: () => ({ status, body: { error: { code, message: code } } }),
+      },
+    ];
+  }
+
+  const gets = (requests: { method: string; url: URL }[]) =>
+    requests.filter((r) => r.url.pathname === '/api/v1/templates/gone').length;
+
+  it.each([
+    [404, 'NOT_FOUND'],
+    [409, 'TEMPLATE_COMPOSITION_ERROR'],
+    [400, 'BAD_REQUEST'],
+    [403, 'FORBIDDEN'],
+  ])(
+    'shows a %i %s at once rather than retrying an answer that cannot change',
+    async (status, code) => {
+      const { wrapper, requests } = setup(failing(status, code), UNCONFIGURED);
+
+      const { result } = renderHook(() => useTemplate('gone'), { wrapper });
+
+      // Under TanStack Query's default this would take about 7 seconds of retries.
+      await waitFor(() => expect(result.current.isError).toBe(true), { timeout: 500 });
+      expect(gets(requests)).toBe(1);
+    },
+  );
+
+  it('retries an INTERNAL_ERROR three times', async () => {
+    const { wrapper, requests } = setup(failing(500, 'INTERNAL_ERROR'), UNCONFIGURED);
+
+    const { result } = renderHook(() => useTemplate('gone', null, { query: { retryDelay: 0 } }), {
+      wrapper,
+    });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(gets(requests)).toBe(1 + MAX_QUERY_RETRIES);
+  });
+
+  it('retries a failure that is not an API answer at all', () => {
+    expect(retryUnlessDefinitive(0, new TypeError('Failed to fetch'))).toBe(true);
+    expect(retryUnlessDefinitive(MAX_QUERY_RETRIES, new TypeError('Failed to fetch'))).toBe(false);
+  });
+
+  it('lets the caller override it', async () => {
+    const { wrapper, requests } = setup(failing(404, 'NOT_FOUND'), UNCONFIGURED);
+
+    const { result } = renderHook(
+      () => useTemplate('gone', null, { query: { retry: 1, retryDelay: 0 } }),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(gets(requests)).toBe(2);
+  });
+
+  it('stands aside for a retry the app set on its QueryClient', async () => {
+    const { wrapper, requests } = setup(failing(500, 'INTERNAL_ERROR'), {
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    const { result } = renderHook(() => useTemplate('gone'), { wrapper });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(gets(requests)).toBe(1);
+  });
+});
+
+describe('useFilteredTemplates query options', () => {
+  it('reach the capabilities read too, so `enabled: false` holds both', async () => {
+    const { wrapper, requests } = setup();
+
+    renderHook(() => useFilteredTemplates({ query: { enabled: false } }), { wrapper });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(requests).toEqual([]);
+  });
+
+  it('pass a retry on to the capabilities read', async () => {
+    const { wrapper, requests } = setup(
+      [
+        {
+          method: 'GET',
+          pattern: /^\/api\/v1\/capabilities$/,
+          handler: () => ({
+            status: 500,
+            body: { error: { code: 'INTERNAL_ERROR', message: 'x' } },
+          }),
+        },
+      ],
+      {},
+    );
+    const capabilityReads = () =>
+      requests.filter((r) => r.url.pathname === '/api/v1/capabilities').length;
+
+    // Not forwarded, the capabilities read would wait a second before its
+    // first retry and this would see one request.
+    renderHook(() => useFilteredTemplates({ query: { retry: 2, retryDelay: 0 } }), { wrapper });
+
+    await waitFor(() => expect(capabilityReads()).toBe(3));
+  });
+
+  it('do not hand the list’s data options to the capabilities read', async () => {
+    const { wrapper } = setup();
+
+    const { result } = renderHook(
+      () => useFilteredTemplates({ query: { select: () => ({ data: [] }) } }),
+      { wrapper },
+    );
+
+    // A `select` meant for the list would have emptied the capability map.
+    await waitFor(() =>
+      expect(result.current.sortableFields).toEqual(['key', 'name', 'createdAt']),
+    );
+  });
+});
+
+describe('a write’s own onSuccess', () => {
+  it('runs without waiting for the lists to refetch', async () => {
+    // After a delete, the open views refetch a resource that is gone. Closing
+    // the panel should not wait on that — here, on a refetch that never ends.
+    const { wrapper, queryClient } = setup();
+    vi.spyOn(queryClient, 'invalidateQueries').mockReturnValue(new Promise<void>(() => {}));
+    const onSuccess = vi.fn();
+
+    const { result } = renderHook(() => useArchiveTemplate({ mutation: { onSuccess } }), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({ params: { path: { key: 'welcome' } }, body: {} });
+    });
+
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    expect(queryClient.invalidateQueries).toHaveBeenCalled();
   });
 });
 

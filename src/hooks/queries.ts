@@ -11,10 +11,14 @@
  * Query keys are `[method, path, init]`, so a mutation can invalidate a whole
  * endpoint with `queryClient.invalidateQueries({ queryKey: ['get', path] })` —
  * which is what `TEMPLATE_PATHS` and `TAG_PATHS` below are for.
+ *
+ * Every hook retries only what can change on a retry: see
+ * `retryUnlessDefinitive`.
  */
 
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback } from 'react';
+import { getApiErrorCode } from '../api/errors.js';
 import type { TemplatesClient, TemplatesQueryClient } from '../api/query.js';
 import type { TagListQuery, TemplateListQuery } from '../api/types.js';
 import { useTemplatesClient } from '../provider.js';
@@ -59,6 +63,44 @@ type QueryOptions = Record<string, unknown>;
 
 export type QueryHookOptions = WithClient & { query?: QueryOptions };
 
+/** How many times a failure that may be transient is retried, as TanStack Query's own default. */
+export const MAX_QUERY_RETRIES = 3;
+
+/**
+ * The `retry` every query hook defaults to: retry a failure that may go away,
+ * and nothing else.
+ *
+ * An answer from the API with a code is definitive. A 404 for a deleted key, a
+ * 409 for a template that cannot be composed, a 400 for a bad shared link: the
+ * same request gets the same answer, and TanStack Query's default of three
+ * retries (1 s, 2 s, 4 s) only holds the error back for about 7 seconds. What is
+ * retried is `INTERNAL_ERROR` and anything with no code at all — a dropped
+ * connection, a proxy's HTML error page.
+ */
+export function retryUnlessDefinitive(failureCount: number, error: unknown): boolean {
+  const code = getApiErrorCode(error);
+  return (code === undefined || code === 'INTERNAL_ERROR') && failureCount < MAX_QUERY_RETRIES;
+}
+
+/**
+ * The options a query hook hands TanStack Query: its own defaults, then the
+ * caller's `query` over them.
+ *
+ * The `retry` default stands aside when the app's `QueryClient` sets a `retry`
+ * of its own in `defaultOptions.queries`: an app that has decided how its
+ * queries retry should not have this package decide again per hook. A `retry`
+ * in `query` overrides both.
+ */
+function useQueryOptions(options: QueryHookOptions, defaults: QueryOptions = {}): QueryOptions {
+  const appRetry = useQueryClient().getDefaultOptions().queries?.retry;
+
+  return {
+    ...(appRetry === undefined ? { retry: retryUnlessDefinitive } : {}),
+    ...defaults,
+    ...options.query,
+  };
+}
+
 // --- templates -------------------------------------------------------------
 
 /**
@@ -73,7 +115,7 @@ export function useTemplatesQuery(query: TemplateListQuery, options: QueryHookOp
     'get',
     '/api/v1/templates',
     { params: { query } },
-    options.query,
+    useQueryOptions(options),
   );
 }
 
@@ -92,7 +134,7 @@ export function useTemplate(
     'get',
     '/api/v1/templates/{key}',
     { params: { path: { key: key ?? '' }, query: { version: version ?? null } } },
-    { enabled: Boolean(key), ...options.query },
+    useQueryOptions(options, { enabled: Boolean(key) }),
   );
 }
 
@@ -105,7 +147,7 @@ export function useTemplateVersions(
     'get',
     '/api/v1/templates/{key}/versions',
     { params: { path: { key: key ?? '' } } },
-    { enabled: Boolean(key), ...options.query },
+    useQueryOptions(options, { enabled: Boolean(key) }),
   );
 }
 
@@ -119,7 +161,7 @@ export function useTemplateVersion(
     'get',
     '/api/v1/templates/{key}/versions/{version}',
     { params: { path: { key: key ?? '', version: version ?? 0 } } },
-    { enabled: Boolean(key) && typeof version === 'number', ...options.query },
+    useQueryOptions(options, { enabled: Boolean(key) && typeof version === 'number' }),
   );
 }
 
@@ -137,7 +179,7 @@ export function useTemplateComposition(
     'get',
     '/api/v1/templates/{key}/composition',
     { params: { path: { key: key ?? '' }, query: { version: version ?? null } } },
-    { enabled: Boolean(key), ...options.query },
+    useQueryOptions(options, { enabled: Boolean(key) }),
   );
 }
 
@@ -156,7 +198,7 @@ export function useTemplateStatusHistory(
     'get',
     '/api/v1/templates/{key}/status-history',
     { params: { path: { key: key ?? '' }, query: { version: version ?? null } } },
-    { enabled: Boolean(key), ...options.query },
+    useQueryOptions(options, { enabled: Boolean(key) }),
   );
 }
 
@@ -172,7 +214,7 @@ export function useTagsQuery(query: TagListQuery = {}, options: QueryHookOptions
     'get',
     '/api/v1/tags',
     { params: { query } },
-    options.query,
+    useQueryOptions(options),
   );
 }
 
@@ -182,7 +224,7 @@ export function useTag(slug: string | null | undefined, options: QueryHookOption
     'get',
     '/api/v1/tags/{slug}',
     { params: { path: { slug: slug ?? '' } } },
-    { enabled: Boolean(slug), ...options.query },
+    useQueryOptions(options, { enabled: Boolean(slug) }),
   );
 }
 
@@ -202,13 +244,13 @@ export function useCapabilities(options: QueryHookOptions = {}) {
     'get',
     '/api/v1/capabilities',
     {},
-    { staleTime: 60 * 60 * 1000, ...options.query },
+    useQueryOptions(options, { staleTime: 60 * 60 * 1000 }),
   );
 }
 
 /** Liveness probe. */
 export function useHealth(options: QueryHookOptions = {}) {
-  return useTemplatesApi(options).useQuery('get', '/health', {}, options.query);
+  return useTemplatesApi(options).useQuery('get', '/health', {}, useQueryOptions(options));
 }
 
 // --- invalidation ----------------------------------------------------------

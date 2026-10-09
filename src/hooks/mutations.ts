@@ -12,6 +12,13 @@
  * template" here: `useCreateTemplateVersion` is the edit. Every field on its
  * body is optional and an omitted one is carried forward from the latest
  * version.
+ *
+ * **A flow that unmounts its own component should use `mutateAsync`.** TanStack
+ * Query drops the callbacks passed to `mutate(variables, { onSuccess })` once
+ * the component that called it unmounts, so "discard the last version, then
+ * close this panel" never closes anything if the discard unmounts the panel
+ * first. Await `mutateAsync(variables)` and act after it instead, or pass
+ * `onSuccess` in the hook's `mutation` options, which survives the unmount.
  */
 
 import type { TemplatesClient } from '../api/query.js';
@@ -31,8 +38,15 @@ type MutationOptions = Record<string, unknown>;
 export type MutationHookOptions = WithClient & { mutation?: MutationOptions };
 
 /**
- * Runs the caller's `onSuccess` after ours, so an app can chain a toast or a
- * redirect onto the invalidation instead of replacing it.
+ * Starts the invalidation, then runs the caller's `onSuccess` without waiting
+ * for it, so an app can chain a toast or a redirect onto a write instead of
+ * replacing the invalidation.
+ *
+ * Not waiting is the point. The refetch can be slow, or fail — after a delete,
+ * the open views refetch a resource that is gone — and "close the panel" should
+ * not wait on either. The mutation settles when the caller's `onSuccess` does,
+ * so `mutateAsync` resolves before the lists have refreshed; await
+ * `useInvalidateTemplates()` yourself when something must wait for them.
  */
 function withInvalidation(
   options: MutationOptions | undefined,
@@ -42,8 +56,9 @@ function withInvalidation(
 
   return {
     ...options,
-    onSuccess: async (...args: unknown[]) => {
-      await invalidate();
+    onSuccess: (...args: unknown[]) => {
+      // A failed refetch is reported on the query that made it, not here.
+      void invalidate();
 
       return callerOnSuccess?.(...args);
     },
@@ -87,7 +102,10 @@ export function useCreateTemplateVersion(options: MutationHookOptions = {}) {
   );
 }
 
-/** Deletes a template and every version of it. */
+/**
+ * Deletes one never-published version of a template: the one named by
+ * `?version=`, or the latest. A published one is refused with a 409 `CONFLICT`.
+ */
 export function useDeleteTemplate(options: MutationHookOptions = {}) {
   const invalidate = useInvalidateTemplates();
 
