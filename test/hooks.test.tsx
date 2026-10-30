@@ -2,7 +2,7 @@ import { QueryClient, type QueryClientConfig, QueryClientProvider } from '@tanst
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createTemplatesClient, type TemplatesClient } from '../src/api/query.js';
+import { createTemplatesClient } from '../src/api/query.js';
 import {
   useArchiveTemplate,
   useCreateTemplateVersion,
@@ -244,24 +244,22 @@ describe('TemplatesProvider', () => {
   it('explains what to do when a hook is used outside the provider', () => {
     const queryClient = new QueryClient();
 
-    function Wrapper({ children }: { children: ReactNode }) {
+    function wrapper({ children }: { children: ReactNode }) {
       return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
     }
 
-    expect(() => renderHook(() => useTemplatesClient(), { wrapper: Wrapper })).toThrow(
-      /TemplatesProvider/,
-    );
+    expect(() => renderHook(() => useTemplatesClient(), { wrapper })).toThrow(/TemplatesProvider/);
   });
 
   it('lets an explicit client stand in for the provider', () => {
     const { client } = setup();
     const queryClient = new QueryClient();
 
-    function Wrapper({ children }: { children: ReactNode }) {
+    function wrapper({ children }: { children: ReactNode }) {
       return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
     }
 
-    const { result } = renderHook(() => useTemplatesClient(client), { wrapper: Wrapper });
+    const { result } = renderHook(() => useTemplatesClient(client), { wrapper });
 
     expect(result.current).toBe(client);
   });

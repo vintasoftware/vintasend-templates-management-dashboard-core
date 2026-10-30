@@ -12,7 +12,7 @@
  * (`PaginatedResponse_ManagedTemplateOut_`) come from there.
  */
 
-import type { components, operations, paths } from './schema.js';
+import type { components, operations } from './schema.js';
 
 type Schemas = components['schemas'];
 

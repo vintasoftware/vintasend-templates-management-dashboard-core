@@ -23,6 +23,7 @@ import { useTanStackRouterAdapter } from '../src/tanstack-router/index.js';
 function setup(search: Record<string, unknown>, options: UseTemplateFiltersOptions = {}) {
   const state: { filters?: TemplateFiltersState } = {};
 
+  // biome-ignore lint/correctness/noComponentHookFactories: the route component captures this test's filters, and is mounted once per setup()
   function TemplateList() {
     state.filters = useTemplateFilters({ ...options, router: useTanStackRouterAdapter() });
     return null;
